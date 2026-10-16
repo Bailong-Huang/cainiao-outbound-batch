@@ -1,0 +1,133 @@
+[1mdiff --git a/address.js b/address.js[m
+[1mindex 8d2429a..a13af01 100644[m
+[1m--- a/address.js[m
+[1m+++ b/address.js[m
+[36m@@ -9,6 +9,11 @@[m
+   };[m
+   const clean = (value) => String(value || "").replace(/\s+/g, " ").trim().replace(/^[,;\s]+|[,;\s]+$/g, "");[m
+   const fold = (value) => clean(value).normalize("NFD").replace(/[\u0300-\u036f]/g, "").toLowerCase().replace(/[^a-z0-9]/g, "");[m
+[32m+[m[32m  const polishVoivodeships = new Set([[m
+[32m+[m[32m    "Dolnośląskie", "Kujawsko-Pomorskie", "Lubelskie", "Lubuskie", "Łódzkie", "Małopolskie",[m
+[32m+[m[32m    "Mazowieckie", "Opolskie", "Podkarpackie", "Podlaskie", "Pomorskie", "Śląskie",[m
+[32m+[m[32m    "Świętokrzyskie", "Warmińsko-Mazurskie", "Wielkopolskie", "Zachodniopomorskie"[m
+[32m+[m[32m  ].map(fold));[m
+   const isPhone = (line) => /^\+?\d[\d\s().-]{6,}$/.test(clean(line)) && /(?:^\+|\d{7,})/.test(clean(line).replace(/\s/g, ""));[m
+   const isPostal = (line) => /^(?:[A-Z]{1,2}[-\s]?)?\d[\dA-Z -]{2,9}$/i.test(clean(line)) && !isPhone(clean(line));[m
+   const countryFromCode = (value) => countryCodes.has(clean(value).toUpperCase()) ? clean(value).toUpperCase() : "";[m
+[36m@@ -63,6 +68,7 @@[m
+     let postalCode = "";[m
+     const addressLines=lines.slice(0,phoneIndex);[m
+     for(const line of addressLines) if(!postalCode&&isPostal(line)&&!line.includes(",")) postalCode=line;[m
+[32m+[m[32m    if(!postalCode) postalCode=addressLines.join(" ").match(/\b\d{2}-\d{3}\b/)?.[0]||"";[m
+     if(!postalCode) postalCode=addressLines.join(" ").match(/\b\d{5}\b/)?.[0]||"";[m
+ [m
+     const rawAddress=addressLines.join(",");[m
+[36m@@ -97,24 +103,70 @@[m
+         const after=rawParts.slice(lastCountryIndex+1).map(segment=>cleanSegment(segment,country,postalCodes)).filter(Boolean);[m
+         const unique=[];[m
+         for(const part of [...before,...after]) if(!unique.some(existing=>fold(existing)===fold(part))) unique.push(part); else warnings.push("已清理重复地址片段“"+part+"”");[m
+[31m-        const streetWords=/\b(?:rue|street|strasse|straße|str\.|road|avenue|ave\.|via|calle|camino|ul\.|ulica|aleja|tee|lane|route|chemin|carrer|plac)\b/i;[m
+[31m-        const houseNumber=/\p{L}[\p{L}'’.-]*(?:\s+\p{L}[\p{L}'’.-]*){0,4}\s+\d+[A-Za-z]?(?:\b|$)/u;[m
+[31m-        const streetCandidates=unique.map((part,index)=>({part,index,score:(streetWords.test(part)?2:0)+(houseNumber.test(part)?2:0)})).filter(item=>item.score>=2);[m
+[31m-        if(unique.length>=3&&streetCandidates.length===1) {[m
+[31m-          const streetIndex=streetCandidates[0].index;[m
+[31m-          if(streetIndex===0) {[m
+[31m-            street=unique[0]; city=unique[1]||""; state=unique[2]||""; district=unique.slice(3).join(", ");[m
+[31m-          } else if(streetIndex===unique.length-1) {[m
+[31m-            street=unique[streetIndex]; city=unique[streetIndex-1]||""; state=unique[streetIndex-2]||""; district=unique.slice(0,Math.max(0,streetIndex-2)).join(", ");[m
+[32m+[m[32m        if(country==="PL"&&unique.some(part=>/\bpaczkomat\b/i.test(part))) {[m
+[32m+[m[32m          // Polish parcel-locker addresses often contain a locker/POI label, locality plus street,[m
+[32m+[m[32m          // county, voivodeship and country in one comma-separated line. Resolve only this explicit shape.[m
+[32m+[m[32m          const provinceIndex=unique.findIndex(part=>polishVoivodeships.has(fold(part)));[m
+[32m+[m[32m          state=provinceIndex>=0?unique[provinceIndex]:"";[m
+[32m+[m[32m          const lockerIndex=unique.findIndex(part=>/\bpaczkomat\b/i.test(part));[m
+[32m+[m[32m          street=lockerIndex>=0?unique[lockerIndex]:"";[m
+[32m+[m[32m          const localityParts=unique.filter((part,index)=>index!==provinceIndex&&index!==lockerIndex);[m
+[32m+[m[32m          let pairedLocality=null;[m
+[32m+[m[32m          for(let i=0;i<localityParts.length&&!pairedLocality;i++) {[m
+[32m+[m[32m            for(let j=0;j<localityParts.length&&!pairedLocality;j++) {[m
+[32m+[m[32m              if(i===j) continue;[m
+[32m+[m[32m              const shortPart=localityParts[i],longPart=localityParts[j];[m
+[32m+[m[32m              const shortFold=fold(shortPart),longFold=fold(longPart);[m
+[32m+[m[32m              if(shortFold.length<5||longFold.length<=shortFold.length||!longFold.startsWith(shortFold)) continue;[m
+[32m+[m[32m              const shortWords=shortPart.split(/\s+/),longWords=longPart.split(/\s+/);[m
+[32m+[m[32m              if(shortWords.length>longWords.length) continue;[m
+[32m+[m[32m              const sameWords=shortWords.every((word,index)=>fold(word)===fold(longWords[index]||""));[m
+[32m+[m[32m              if(!sameWords) continue;[m
+[32m+[m[32m              pairedLocality={city:shortPart,extended:longPart,suffix:longWords.slice(shortWords.length).join(" ")};[m
+[32m+[m[32m            }[m
+           }[m
+[31m-          if(street&&city&&state) {[m
+[31m-            if(unique.length>3) warnings.push("国家位于地址末尾且包含多个地区片段；已按街道标记或门牌号定位街道，其余片段按原顺序填入城市、省州及区县，请在菜鸟页面创建前核对。");[m
+[31m-            else warnings.push("国家位于地址末尾；已按街道标记或门牌号定位街道并按原顺序拆分城市和省州，请在菜鸟页面创建前核对。");[m
+[31m-          } else needsReview=true;[m
+[32m+[m[32m          if(pairedLocality) {[m
+[32m+[m[32m            city=pairedLocality.city;[m
+[32m+[m[32m            if(pairedLocality.suffix) street=clean(street+"; "+pairedLocality.suffix);[m
+[32m+[m[32m          } else {[m
+[32m+[m[32m            city=localityParts[0]||"";[m
+[32m+[m[32m          }[m
+[32m+[m[32m          const consumed=new Set([provinceIndex,lockerIndex]);[m
+[32m+[m[32m          if(pairedLocality) {[m
+[32m+[m[32m            localityParts.forEach((part,index)=>{[m
+[32m+[m[32m              if(fold(part)===fold(pairedLocality.city)||fold(part)===fold(pairedLocality.extended)) {[m
+[32m+[m[32m                const originalIndex=unique.indexOf(part);[m
+[32m+[m[32m                if(originalIndex>=0) consumed.add(originalIndex);[m
+[32m+[m[32m              }[m
+[32m+[m[32m            });[m
+[32m+[m[32m          } else if(city) {[m
+[32m+[m[32m            const originalIndex=unique.indexOf(city);[m
+[32m+[m[32m            if(originalIndex>=0) consumed.add(originalIndex);[m
+[32m+[m[32m          }[m
+[32m+[m[32m          const districtParts=unique.filter((part,index)=>!consumed.has(index));[m
+[32m+[m[32m          district=districtParts.join(", ");[m
+[32m+[m[32m          if(!state||!city||!street||districtParts.length>1) needsReview=true;[m
+[32m+[m[32m          else warnings.push("已识别波兰 Paczkomat 快递柜地址；柜机地点保留在街道栏，重复城市和邮编已合并。请核对柜机代码及收件信息。");[m
+         } else {[m
+[31m-          street=unique[0]||""; city=unique[1]||""; state=unique[2]||"";[m
+[31m-          if(unique.length>4) { district=unique.slice(3,-1).join(", "); street=[street,...unique.slice(-1)].filter(Boolean).join(", "); }[m
+[31m-          needsReview=unique.length!==3;[m
+[32m+[m[32m          const streetWords=/\b(?:rue|street|strasse|straße|str\.|road|avenue|ave\.|via|calle|camino|ul\.|ulica|aleja|tee|lane|route|chemin|carrer|plac)\b/i;[m
+[32m+[m[32m          const houseNumber=/\p{L}[\p{L}'’.-]*(?:\s+\p{L}[\p{L}'’.-]*){0,4}\s+\d+[A-Za-z]?(?:\b|$)/u;[m
+[32m+[m[32m          const streetCandidates=unique.map((part,index)=>({part,index,score:(streetWords.test(part)?2:0)+(houseNumber.test(part)?2:0)})).filter(item=>item.score>=2);[m
+[32m+[m[32m          if(unique.length>=3&&streetCandidates.length===1) {[m
+[32m+[m[32m            const streetIndex=streetCandidates[0].index;[m
+[32m+[m[32m            if(streetIndex===0) {[m
+[32m+[m[32m              street=unique[0]; city=unique[1]||""; state=unique[2]||""; district=unique.slice(3).join(", ");[m
+[32m+[m[32m            } else if(streetIndex===unique.length-1) {[m
+[32m+[m[32m              street=unique[streetIndex]; city=unique[streetIndex-1]||""; state=unique[streetIndex-2]||""; district=unique.slice(0,Math.max(0,streetIndex-2)).join(", ");[m
+[32m+[m[32m            }[m
+[32m+[m[32m            if(street&&city&&state) {[m
+[32m+[m[32m              if(unique.length>3) warnings.push("国家位于地址末尾且包含多个地区片段；已按街道标记或门牌号定位街道，其余片段按原顺序填入城市、省州及区县，请在菜鸟页面创建前核对。");[m
+[32m+[m[32m              else warnings.push("国家位于地址末尾；已按街道标记或门牌号定位街道并按原顺序拆分城市和省州，请在菜鸟页面创建前核对。");[m
+[32m+[m[32m            } else needsReview=true;[m
+[32m+[m[32m          } else {[m
+[32m+[m[32m            street=unique[0]||""; city=unique[1]||""; state=unique[2]||"";[m
+[32m+[m[32m            if(unique.length>4) { district=unique.slice(3,-1).join(", "); street=[street,...unique.slice(-1)].filter(Boolean).join(", "); }[m
+[32m+[m[32m            needsReview=unique.length!==3;[m
+[32m+[m[32m          }[m
+         }[m
+       } else {[m
+         street=parts[0]||""; city=parts[1]||""; state=parts[2]||"";[m
+[1mdiff --git a/sidepanel.css b/sidepanel.css[m
+[1mindex a330279..ef073ca 100644[m
+[1m--- a/sidepanel.css[m
+[1m+++ b/sidepanel.css[m
+[36m@@ -16,3 +16,4 @@[m
+ .notice{white-space:pre-wrap;overflow-wrap:anywhere;word-break:break-word;max-height:42vh;overflow:auto}[m
+ [m
+ .form-status.warning{color:var(--amber)}[m
+[32m+[m[32m.order-head{min-width:0}.state{max-width:112px;overflow:hidden;text-overflow:ellipsis}.order-extra{min-width:0}.order-error{max-height:190px;overflow:auto;min-width:0;margin:0 0 8px;padding:8px;border:1px solid #f3c8c4;border-radius:7px;background:#fff4f2;color:#a22d25;font-size:10px;line-height:1.45;white-space:pre-wrap;overflow-wrap:anywhere;word-break:break-word}.tiny-note{overflow-wrap:anywhere;word-break:break-word}[m
+[1mdiff --git a/sidepanel.html b/sidepanel.html[m
+[1mindex d207a3a..e709211 100644[m
+[1m--- a/sidepanel.html[m
+[1m+++ b/sidepanel.html[m
+[36m@@ -13,7 +13,7 @@[m
+       <h1>批量出库助手</h1>[m
+       <p class="subtitle">从面单目录选择订单，核对资料后填入菜鸟。</p>[m
+     </div>[m
+[31m-    <span class="badge">正式版 v1.0.0</span>[m
+[32m+[m[32m    <span class="badge">开发版 v1.0.5</span>[m
+   </header>[m
+ [m
+   <section class="toolbar card">[m

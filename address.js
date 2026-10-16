@@ -9,6 +9,11 @@
   };
   const clean = (value) => String(value || "").replace(/\s+/g, " ").trim().replace(/^[,;\s]+|[,;\s]+$/g, "");
   const fold = (value) => clean(value).normalize("NFD").replace(/[\u0300-\u036f]/g, "").toLowerCase().replace(/[^a-z0-9]/g, "");
+  const polishVoivodeships = new Set([
+    "Dolnośląskie", "Kujawsko-Pomorskie", "Lubelskie", "Lubuskie", "Łódzkie", "Małopolskie",
+    "Mazowieckie", "Opolskie", "Podkarpackie", "Podlaskie", "Pomorskie", "Śląskie",
+    "Świętokrzyskie", "Warmińsko-Mazurskie", "Wielkopolskie", "Zachodniopomorskie"
+  ].map(fold));
   const isPhone = (line) => /^\+?\d[\d\s().-]{6,}$/.test(clean(line)) && /(?:^\+|\d{7,})/.test(clean(line).replace(/\s/g, ""));
   const isPostal = (line) => /^(?:[A-Z]{1,2}[-\s]?)?\d[\dA-Z -]{2,9}$/i.test(clean(line)) && !isPhone(clean(line));
   const countryFromCode = (value) => countryCodes.has(clean(value).toUpperCase()) ? clean(value).toUpperCase() : "";
@@ -63,6 +68,7 @@
     let postalCode = "";
     const addressLines=lines.slice(0,phoneIndex);
     for(const line of addressLines) if(!postalCode&&isPostal(line)&&!line.includes(",")) postalCode=line;
+    if(!postalCode) postalCode=addressLines.join(" ").match(/\b\d{2}-\d{3}\b/)?.[0]||"";
     if(!postalCode) postalCode=addressLines.join(" ").match(/\b\d{5}\b/)?.[0]||"";
 
     const rawAddress=addressLines.join(",");
@@ -97,24 +103,70 @@
         const after=rawParts.slice(lastCountryIndex+1).map(segment=>cleanSegment(segment,country,postalCodes)).filter(Boolean);
         const unique=[];
         for(const part of [...before,...after]) if(!unique.some(existing=>fold(existing)===fold(part))) unique.push(part); else warnings.push("已清理重复地址片段“"+part+"”");
-        const streetWords=/\b(?:rue|street|strasse|straße|str\.|road|avenue|ave\.|via|calle|camino|ul\.|ulica|aleja|tee|lane|route|chemin|carrer|plac)\b/i;
-        const houseNumber=/\p{L}[\p{L}'’.-]*(?:\s+\p{L}[\p{L}'’.-]*){0,4}\s+\d+[A-Za-z]?(?:\b|$)/u;
-        const streetCandidates=unique.map((part,index)=>({part,index,score:(streetWords.test(part)?2:0)+(houseNumber.test(part)?2:0)})).filter(item=>item.score>=2);
-        if(unique.length>=3&&streetCandidates.length===1) {
-          const streetIndex=streetCandidates[0].index;
-          if(streetIndex===0) {
-            street=unique[0]; city=unique[1]||""; state=unique[2]||""; district=unique.slice(3).join(", ");
-          } else if(streetIndex===unique.length-1) {
-            street=unique[streetIndex]; city=unique[streetIndex-1]||""; state=unique[streetIndex-2]||""; district=unique.slice(0,Math.max(0,streetIndex-2)).join(", ");
+        if(country==="PL"&&unique.some(part=>/\bpaczkomat\b/i.test(part))) {
+          // Polish parcel-locker addresses often contain a locker/POI label, locality plus street,
+          // county, voivodeship and country in one comma-separated line. Resolve only this explicit shape.
+          const provinceIndex=unique.findIndex(part=>polishVoivodeships.has(fold(part)));
+          state=provinceIndex>=0?unique[provinceIndex]:"";
+          const lockerIndex=unique.findIndex(part=>/\bpaczkomat\b/i.test(part));
+          street=lockerIndex>=0?unique[lockerIndex]:"";
+          const localityParts=unique.filter((part,index)=>index!==provinceIndex&&index!==lockerIndex);
+          let pairedLocality=null;
+          for(let i=0;i<localityParts.length&&!pairedLocality;i++) {
+            for(let j=0;j<localityParts.length&&!pairedLocality;j++) {
+              if(i===j) continue;
+              const shortPart=localityParts[i],longPart=localityParts[j];
+              const shortFold=fold(shortPart),longFold=fold(longPart);
+              if(shortFold.length<5||longFold.length<=shortFold.length||!longFold.startsWith(shortFold)) continue;
+              const shortWords=shortPart.split(/\s+/),longWords=longPart.split(/\s+/);
+              if(shortWords.length>longWords.length) continue;
+              const sameWords=shortWords.every((word,index)=>fold(word)===fold(longWords[index]||""));
+              if(!sameWords) continue;
+              pairedLocality={city:shortPart,extended:longPart,suffix:longWords.slice(shortWords.length).join(" ")};
+            }
           }
-          if(street&&city&&state) {
-            if(unique.length>3) warnings.push("国家位于地址末尾且包含多个地区片段；已按街道标记或门牌号定位街道，其余片段按原顺序填入城市、省州及区县，请在菜鸟页面创建前核对。");
-            else warnings.push("国家位于地址末尾；已按街道标记或门牌号定位街道并按原顺序拆分城市和省州，请在菜鸟页面创建前核对。");
-          } else needsReview=true;
+          if(pairedLocality) {
+            city=pairedLocality.city;
+            if(pairedLocality.suffix) street=clean(street+"; "+pairedLocality.suffix);
+          } else {
+            city=localityParts[0]||"";
+          }
+          const consumed=new Set([provinceIndex,lockerIndex]);
+          if(pairedLocality) {
+            localityParts.forEach((part,index)=>{
+              if(fold(part)===fold(pairedLocality.city)||fold(part)===fold(pairedLocality.extended)) {
+                const originalIndex=unique.indexOf(part);
+                if(originalIndex>=0) consumed.add(originalIndex);
+              }
+            });
+          } else if(city) {
+            const originalIndex=unique.indexOf(city);
+            if(originalIndex>=0) consumed.add(originalIndex);
+          }
+          const districtParts=unique.filter((part,index)=>!consumed.has(index));
+          district=districtParts.join(", ");
+          if(!state||!city||!street||districtParts.length>1) needsReview=true;
+          else warnings.push("已识别波兰 Paczkomat 快递柜地址；柜机地点保留在街道栏，重复城市和邮编已合并。请核对柜机代码及收件信息。");
         } else {
-          street=unique[0]||""; city=unique[1]||""; state=unique[2]||"";
-          if(unique.length>4) { district=unique.slice(3,-1).join(", "); street=[street,...unique.slice(-1)].filter(Boolean).join(", "); }
-          needsReview=unique.length!==3;
+          const streetWords=/\b(?:rue|street|strasse|straße|str\.|road|avenue|ave\.|via|calle|camino|ul\.|ulica|aleja|tee|lane|route|chemin|carrer|plac)\b/i;
+          const houseNumber=/\p{L}[\p{L}'’.-]*(?:\s+\p{L}[\p{L}'’.-]*){0,4}\s+\d+[A-Za-z]?(?:\b|$)/u;
+          const streetCandidates=unique.map((part,index)=>({part,index,score:(streetWords.test(part)?2:0)+(houseNumber.test(part)?2:0)})).filter(item=>item.score>=2);
+          if(unique.length>=3&&streetCandidates.length===1) {
+            const streetIndex=streetCandidates[0].index;
+            if(streetIndex===0) {
+              street=unique[0]; city=unique[1]||""; state=unique[2]||""; district=unique.slice(3).join(", ");
+            } else if(streetIndex===unique.length-1) {
+              street=unique[streetIndex]; city=unique[streetIndex-1]||""; state=unique[streetIndex-2]||""; district=unique.slice(0,Math.max(0,streetIndex-2)).join(", ");
+            }
+            if(street&&city&&state) {
+              if(unique.length>3) warnings.push("国家位于地址末尾且包含多个地区片段；已按街道标记或门牌号定位街道，其余片段按原顺序填入城市、省州及区县，请在菜鸟页面创建前核对。");
+              else warnings.push("国家位于地址末尾；已按街道标记或门牌号定位街道并按原顺序拆分城市和省州，请在菜鸟页面创建前核对。");
+            } else needsReview=true;
+          } else {
+            street=unique[0]||""; city=unique[1]||""; state=unique[2]||"";
+            if(unique.length>4) { district=unique.slice(3,-1).join(", "); street=[street,...unique.slice(-1)].filter(Boolean).join(", "); }
+            needsReview=unique.length!==3;
+          }
         }
       } else {
         street=parts[0]||""; city=parts[1]||""; state=parts[2]||"";

@@ -16,3 +16,4 @@
 .notice{white-space:pre-wrap;overflow-wrap:anywhere;word-break:break-word;max-height:42vh;overflow:auto}
 
 .form-status.warning{color:var(--amber)}
+.order-head{min-width:0}.state{max-width:112px;overflow:hidden;text-overflow:ellipsis}.order-extra{min-width:0}.order-error{max-height:190px;overflow:auto;min-width:0;margin:0 0 8px;padding:8px;border:1px solid #f3c8c4;border-radius:7px;background:#fff4f2;color:#a22d25;font-size:10px;line-height:1.45;white-space:pre-wrap;overflow-wrap:anywhere;word-break:break-word}.tiny-note{overflow-wrap:anywhere;word-break:break-word}
