@@ -1,12 +1,15 @@
 # 菜鸟批量出库助手 | Cainiao Batch Outbound Assistant
 
+
 **版本 / Version: 1.0.5** · [下载 v1.0.5 插件 ZIP / Download extension ZIP](https://github.com/Bailong-Huang/cainiao-outbound-batch/releases/download/v1.0.5/cainiao-outbound-batch-v1.0.5.zip)
+
 
 [简体中文](#简体中文) | [English](#english)
 
 ## 简体中文
 
 ### 应用场景
+
 面向使用 AliExpress 跨境卖家中心（CSP）和菜鸟海外仓的卖家。插件将待发货订单与本机 PDF 面单对应，读取订单资料，并辅助预填菜鸟出库委托单。它是独立的浏览器助手，不是 AliExpress 或菜鸟官方产品。
 
 ### 功能
@@ -25,6 +28,8 @@
 
 ### 隐私与兼容性
 订单资料可能包含买家姓名、电话和地址，仅保存在当前 Chrome 配置文件的扩展 IndexedDB，不会发送到本项目服务器。本项目不含后端。地址解析采用启发式规则，平台页面更新也可能影响自动化；遇到失败提示时请勿提交该订单。清除扩展数据、移除扩展或更换 Chrome 配置文件可能导致本地记录丢失。
+
+
 
 ## English
 
@@ -47,3 +52,5 @@ An independent browser assistant for sellers using the AliExpress Cross-border S
 
 ### Privacy and compatibility
 Order records may contain buyer names, phone numbers, and addresses. They are stored only in the extension's IndexedDB in the current Chrome profile and are not sent to a project server; this project has no backend. Address parsing is heuristic and platform updates may affect automation. Do not submit an order after an error is reported. Clearing extension data, removing the extension, or changing Chrome profiles may cause local records to be lost.
+
+

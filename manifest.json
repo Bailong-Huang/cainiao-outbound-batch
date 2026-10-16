@@ -1,0 +1,22 @@
+{
+  "manifest_version": 3,
+  "name": "菜鸟批量出库助手",
+  "version": "1.0.0",
+  "description": "按面单日期选择速卖通订单，辅助填写菜鸟海外仓出库单。",
+  "permissions": ["sidePanel", "scripting", "tabs", "storage", "clipboardRead"],
+  "host_permissions": [
+    "https://b.gfn.cainiao.com/*",
+    "https://csp.aliexpress.com/*"
+  ],
+  "background": { "service_worker": "background.js" },
+  "action": { "default_title": "菜鸟批量出库助手" },
+  "side_panel": { "default_path": "sidepanel.html" },
+  "content_scripts": [
+    {
+      "matches": ["https://b.gfn.cainiao.com/*", "https://csp.aliexpress.com/*"],
+      "js": ["address.js", "content.js"],
+      "run_at": "document_idle",
+      "all_frames": true
+    }
+  ]
+}

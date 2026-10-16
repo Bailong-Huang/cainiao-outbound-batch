@@ -1,0 +1,5 @@
+# Local development and release artifacts
+.DS_Store
+Thumbs.db
+*.log
+*.zip

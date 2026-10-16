@@ -1,0 +1,72 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>菜鸟批量出库助手</title>
+  <link rel="stylesheet" href="sidepanel.css">
+</head>
+<body>
+  <header class="topbar">
+    <div>
+      <p class="eyebrow">CAINIAO · OUTBOUND</p>
+      <h1>批量出库助手</h1>
+      <p class="subtitle">从面单目录选择订单，核对资料后填入菜鸟。</p>
+    </div>
+    <span class="badge">正式版 v1.0.0</span>
+  </header>
+
+  <section class="toolbar card">
+    <div class="folder-line">
+      <div class="folder-icon">▣</div>
+      <div class="folder-copy"><strong id="folderName">尚未选择面单目录</strong><small id="scanInfo">首次使用请选择本机存放 PDF 面单的文件夹</small></div>
+    </div>
+    <div class="toolbar-actions">
+      <button id="chooseFolder" class="button primary">选择面单目录</button>
+      <button id="refreshFiles" class="button secondary" disabled>刷新</button>
+    </div>
+  </section>
+
+  <section class="selection-bar">
+    <div><strong id="selectedCount">已选 0 单</strong><span id="readyCount" class="muted"> · 0 单资料完整</span></div>
+    <div class="selection-actions"><button id="capturePage" class="button secondary" disabled>批量读取订单和地址</button><button id="fillSelected" class="button primary" disabled>预填第一单</button></div>
+  </section>
+  <div class="analysis-action"><button id="analyzeAddresses" class="text-button">分析 IndexedDB 地址规律（仅生成脱敏统计）</button></div>
+
+  <div id="notice" class="notice" hidden></div>
+  <main id="fileGroups" class="groups"><div class="empty-state">选择面单目录后，这里会按修改日期列出 PDF。</div></main>
+
+  <footer class="footnote">
+    <span class="dot"></span>每单预填后由你核对并点击创建；完成后点“我已创建”继续下一单。
+  </footer>
+
+  <dialog id="detailDialog" class="detail-dialog">
+    <form method="dialog" id="detailForm">
+      <div class="dialog-heading"><div><p class="eyebrow">ORDER DETAILS</p><h2 id="dialogTitle">订单资料</h2></div><button class="icon-button" value="cancel" aria-label="关闭">×</button></div>
+      <p class="help">订单号由 PDF 文件名生成。插件会读取 SKU、数量、首公里服务商和运单号。获取地址时可先尝试自动点击 CSP 的“复制买家信息”，再点“读取剪贴板”；若剪贴板没更新，请在 CSP 页面真实点击高亮按钮后重读。</p>
+      <label>买家姓名<input id="buyerName" autocomplete="off" placeholder="从 CSP 表格读取或粘贴买家信息中的姓名"></label>
+      <label>买家收货地址 <span>检查地址会显示解析预览并清理明显重复内容；顺序不明确时，按“国家代码,省/州,城市,街道”整理后再预填。</span><textarea id="buyerRaw" rows="5" placeholder="姓名\n国家代码,省/州,城市,街道\n邮编\n电话（或粘贴完整买家信息）"></textarea></label>
+      <label>商品编码与数量 <span>每行一个，格式：商品编码,数量</span><textarea id="skuRows" rows="3" placeholder="SKU-001,1"></textarea></label>
+      <div class="two-col">
+        <label>首公里服务商<select id="carrier"><option value="">选择首公里服务商</option><option value="DPD">DPD</option><option value="Inpost">Inpost</option></select></label>
+        <label>运单号<input id="tracking" autocomplete="off" placeholder="从 CSP 复制"></label>
+      </div>
+      <label>CSP 配送商代码<input id="deliveryProvider" autocomplete="off" placeholder="自动读取，例如 DPD_PL"></label>
+      <p id="detailStatus" class="form-status"></p>
+      <div class="dialog-actions"><button type="button" id="captureCsp" class="button secondary">读取 CSP 订单资料</button><button type="button" id="focusBuyerCopy" class="button secondary">自动点击复制按钮</button><button type="button" id="readBuyerClipboard" class="button secondary">读取剪贴板</button><button type="button" id="parseBuyer" class="button secondary">检查地址</button><button type="submit" class="button primary">保存本次资料</button></div>
+    </form>
+  </dialog>
+
+  <dialog id="addressReportDialog" class="report-dialog">
+    <form method="dialog">
+      <div class="dialog-heading"><div><p class="eyebrow">LOCAL · PRIVACY SAFE</p><h2>地址规律统计</h2></div><button class="icon-button" value="cancel" aria-label="关闭">×</button></div>
+      <p class="help">报告在本机根据 IndexedDB 生成，不包含订单号、姓名、电话、邮编或原始地址。复制报告发回后，我可以据真实样本调整解析器。</p>
+      <textarea id="addressReport" rows="18" readonly spellcheck="false"></textarea>
+      <div class="dialog-actions"><button type="button" id="copyAddressReport" class="button secondary">复制报告</button><button class="button primary" value="close">完成</button></div>
+    </form>
+  </dialog>
+
+  <script src="address.js"></script>
+  <script src="sidepanel.js"></script>
+</body>
+</html>
