@@ -1,5 +1,5 @@
 (() => {
-  const CONTENT_BUILD="1.0.0";
+  const CONTENT_BUILD="1.0.5";
   if(globalThis.__cainiaoOutboundContentLoaded) return;
   globalThis.__cainiaoOutboundContentBuild=CONTENT_BUILD;
   globalThis.__cainiaoOutboundContentLoaded=true;
@@ -7,24 +7,44 @@
   const visible = (el) => { if(!el) return false; const r=el.getBoundingClientRect(),s=getComputedStyle(el); return r.width>0&&r.height>0&&s.visibility!=="hidden"&&s.display!=="none"; };
   const textOf = (el) => (el?.innerText || el?.textContent || "").trim();
   const SKU_ROW_SELECTOR='tr,[role="row"],[class*="next-table-row"]';
-  const SKU_SEARCH_SELECTOR="textarea,input,[role='textbox'],[contenteditable='true']";
+  const SKU_SEARCH_SELECTOR="textarea,input,[role='textbox'],[role='searchbox'],[role='combobox'],[contenteditable='true']";
   function deepTextOf(el) {
     if(!el) return "";
-    const own=String(el.innerText||el.textContent||"");
-    const shadows=deepQueryAll(el,"*").filter(node=>node.shadowRoot).map(node=>deepTextOf(node.shadowRoot));
-    return [own,...shadows].filter(Boolean).join(" ").trim();
+    // Traverse each light DOM subtree once and visit shadow roots iteratively.
+    // The recursive version repeatedly walked nested shadow trees and could
+    // become expensive on pages with several component layers.
+    const roots=[el],texts=[];
+    for(let index=0;index<roots.length;index++) {
+      const root=roots[index];
+      const own=String(root.innerText||root.textContent||"").trim();
+      if(own) texts.push(own);
+      if(!root.querySelectorAll) continue;
+      for(const node of root.querySelectorAll("*")) if(node.shadowRoot) roots.push(node.shadowRoot);
+    }
+    return texts.join(" ").trim();
   }
   function deepQueryAll(root,selector) {
     if(!root?.querySelectorAll) return [];
-    const found=[],roots=[root],seenRoots=new Set();
-    while(roots.length) {
-      const current=roots.shift();
+    const found=[],foundSet=new Set(),roots=[root],seenRoots=new Set();
+    // Use an index instead of Array.shift() (which reindexes the remaining
+    // queue), and match elements during the single descendant scan needed to
+    // discover nested shadow roots.
+    for(let rootIndex=0;rootIndex<roots.length;rootIndex++) {
+      const current=roots[rootIndex];
       if(seenRoots.has(current)) continue;
       seenRoots.add(current);
-      found.push(...current.querySelectorAll(selector));
-      for(const element of current.querySelectorAll("*")) if(element.shadowRoot) roots.push(element.shadowRoot);
+      for(const element of current.querySelectorAll("*")) {
+        if(element.matches(selector)&&!foundSet.has(element)) { foundSet.add(element); found.push(element); }
+        if(element.shadowRoot) roots.push(element.shadowRoot);
+      }
     }
-    return [...new Set(found)];
+    return found;
+  }
+  function smallestDomFirst(elements) {
+    // Measure once per element. Computing querySelectorAll('*').length inside
+    // Array.sort's comparator repeated the same subtree scans many times.
+    return elements.map((element,index)=>({element,index,size:element.querySelectorAll("*").length}))
+      .sort((a,b)=>a.size-b.size||a.index-b.index).map(item=>item.element);
   }
   function composedParent(element) {
     if(element?.parentElement) return element.parentElement;
@@ -49,9 +69,11 @@
       // 只接受真正的弹窗/overlay 容器；不再用包住弹窗和底层表单的页面 section 兜底。
       if(inputs.length&&rows.length) matches.push({modal:candidate,title:dialogTitles[0],inputs,rows});
     }
-    matches.sort((a,b)=>deepQueryAll(a.modal,"*").length-deepQueryAll(b.modal,"*").length);
+    const modalSizes=new Map(matches.map(item=>[item,item.modal.querySelectorAll("*").length]));
+    matches.sort((a,b)=>modalSizes.get(a)-modalSizes.get(b));
     if(matches.length) return {...matches[0],found:true,titles,stats};
-    const diagnostic=stats.sort((a,b)=>deepQueryAll(a.candidate,"*").length-deepQueryAll(b.candidate,"*").length)[0];
+    const candidateSizes=new Map(stats.map(item=>[item,item.candidate.querySelectorAll("*").length]));
+    const diagnostic=stats.sort((a,b)=>candidateSizes.get(a)-candidateSizes.get(b))[0];
     return {modal:diagnostic?.candidate||document.body,found:false,titles,inputs:diagnostic?.inputs||[],rows:diagnostic?.rows||[],stats};
   }
   const control = (el) => {
@@ -59,6 +81,27 @@
     const tag=el.tagName.toLowerCase(),type=(el.getAttribute("type")||"text").toLowerCase();
     return (tag==="textarea" || tag==="select" || (tag==="input"&&["text","search","tel","email","number",""].includes(type)));
   };
+  function isSkuSearchControl(el) {
+    if(!visible(el)||el.disabled||el.readOnly) return false;
+    const tag=el.tagName?.toLowerCase(),type=(el.getAttribute?.("type")||"text").toLowerCase();
+    if(tag==="textarea") return true;
+    if(tag==="input") return !["button","submit","reset","checkbox","radio","file","hidden","image"].includes(type);
+    if(el.isContentEditable) return true;
+    return ["textbox","searchbox"].includes(el.getAttribute?.("role"));
+  }
+  function setSkuSearchValue(el,value) {
+    const tag=el?.tagName?.toLowerCase();
+    if(tag==="input"||tag==="textarea") { setValue(el,value); return true; }
+    if(el?.isContentEditable||["textbox","searchbox"].includes(el?.getAttribute?.("role"))) {
+      el.textContent=value;
+      el.dispatchEvent(new InputEvent("input",{bubbles:true,inputType:"insertText",data:value}));
+      el.dispatchEvent(new Event("change",{bubbles:true}));
+      return true;
+    }
+    const nested=el?.querySelector?.("input:not([type=checkbox]):not([type=radio]):not([type=hidden]),textarea,[contenteditable='true'],[role='textbox'],[role='searchbox']");
+    if(nested&&nested!==el) return setSkuSearchValue(nested,value);
+    return false;
+  }
   function labelNodes(label) {
     const target=norm(label);
     return deepQueryAll(document,"label,div,span,p,strong,dt").filter(n=>{const t=norm(textOf(n));return t&&t.length<34&&(t===target||t.endsWith(target));});
@@ -88,11 +131,11 @@
   async function wait(ms=300){return new Promise(r=>setTimeout(r,ms));}
   function visibleExactText(value) {
     const target=norm(value);
-    return [...document.querySelectorAll("button,[role=button],[role=option],li,span,div,a")].filter(el=>visible(el)&&norm(textOf(el))===target).sort((a,b)=>a.querySelectorAll("*").length-b.querySelectorAll("*").length)[0]||null;
+    return smallestDomFirst([...document.querySelectorAll("button,[role=button],[role=option],li,span,div,a")].filter(el=>visible(el)&&norm(textOf(el))===target))[0]||null;
   }
   function visibleExactTextWithin(root,value) {
     const target=norm(value);
-    return deepQueryAll(root,"button,[role=button],[role=option],li,span,div,a").filter(el=>visible(el)&&norm(textOf(el))===target).sort((a,b)=>a.querySelectorAll("*").length-b.querySelectorAll("*").length)[0]||null;
+    return smallestDomFirst(deepQueryAll(root,"button,[role=button],[role=option],li,span,div,a").filter(el=>visible(el)&&norm(textOf(el))===target))[0]||null;
   }
   function findClickableForLabel(label) {
     for(const node of labelNodes(label)) {
@@ -120,8 +163,8 @@
   function clickText(values) {
     const wanted=values.map(norm);
     const candidates=[...document.querySelectorAll("button,[role=button],a,span,div")].filter(el=>visible(el)&&wanted.includes(norm(textOf(el))));
-    candidates.sort((a,b)=>a.querySelectorAll("*").length-b.querySelectorAll("*").length);
-    if(candidates[0]) { candidates[0].click(); return true; }
+    const ordered=smallestDomFirst(candidates);
+    if(ordered[0]) { ordered[0].click(); return true; }
     return false;
   }
   function normalizeSku(value) { return String(value||"").replace(/^AE-/i,"").replace(/[^a-z0-9]/gi,"").toLowerCase(); }
@@ -192,7 +235,7 @@
       if(input) break;
     }
     if(!input) {
-      const uploadButtons=deepQueryAll(document,"button,[role=button],label,span,div").filter(el=>visible(el)&&norm(textOf(el)).includes("文件上传")).sort((a,b)=>a.querySelectorAll("*").length-b.querySelectorAll("*").length);
+      const uploadButtons=smallestDomFirst(deepQueryAll(document,"button,[role=button],label,span,div").filter(el=>visible(el)&&norm(textOf(el)).includes("文件上传")));
       for(const button of uploadButtons) {
         for(let parent=button,depth=0;parent&&depth<6;parent=parent.parentElement,depth++) {
           input=deepQueryAll(parent,'input[type="file"]').find(el=>!el.disabled)||null;
@@ -244,8 +287,15 @@
     const modal=dialogContext?.modal||document.body;
     const searchCandidates=dialogContext?.inputs||[];
     if(!dialogContext?.found) return skuFailure("04/8.2 定位 SKU 弹窗结构","点击“选择SKU信息”后，没有找到一个可见 dialog/overlay 容器同时包含该标题、搜索框和 SKU 行；未使用底层出库页面字段代替弹窗内容，尚未开始搜索或勾选。",modal,{可见标题候选:dialogContext?.titles?.length||0,可见弹窗候选:deepQueryAll(document,'[role="dialog"],[aria-modal="true"],[class*="dialog"],[class*="modal"],[class*="next-overlay"]:not([class*="mask"])').filter(visible).length,标题所在弹窗摘要:(dialogContext?.stats||[]).slice(0,8).map(item=>`class=${String(item.candidate.getAttribute("class")||"").slice(0,90)},role=${item.candidate.getAttribute("role")||"空"},输入=${item.inputs.length},行=${item.rows.length},文本=${textOf(item.candidate).slice(0,100)}`).join(" || ")||"没有 dialog 候选包含标题",可见输入摘要:searchCandidates.slice(0,8).map(el=>`${el.tagName.toLowerCase()} placeholder=${el.placeholder||el.getAttribute("data-placeholder")||"空"} aria=${el.getAttribute("aria-label")||"空"}`).join(" | ")||"无",SKU行样例:(dialogContext?.rows||[]).slice(0,8).map(textOf).join(" | ")||"无"});
-    const search=searchCandidates.find(el=>/sku编码|sku名称|商品编码/i.test(`${el.placeholder||""} ${el.getAttribute("aria-label")||""} ${el.getAttribute("title")||""} ${el.getAttribute("data-placeholder")||""}`))||searchCandidates.find(el=>control(el)||el.getAttribute("role")==="textbox"||el.isContentEditable);
-    if(!search) return skuFailure("04/8.2 定位 SKU 搜索框","没有找到 SKU 编码搜索框；当前 frame 中未识别到可见的 textarea/input/role=textbox/contenteditable。",modal,{弹窗候选数:deepQueryAll(document,'[role="dialog"],[class*="dialog"],[class*="modal"],[class*="next-overlay"]:not([class*="mask"])').filter(visible).length,SKU输入候选数:searchCandidates.length,预期SKU:items.map(item=>item.code).join(",")});
+    const searchHint=el=>`${el.placeholder||""} ${el.getAttribute("data-placeholder")||""} ${el.getAttribute("aria-placeholder")||""} ${el.getAttribute("aria-label")||""} ${el.getAttribute("title")||""}`;
+    const search=searchCandidates.find(el=>isSkuSearchControl(el)&&/sku编码|sku名称|商品编码/i.test(searchHint(el)))||searchCandidates.find(isSkuSearchControl);
+    if(!search) {
+      const candidateDetails=deepQueryAll(modal,"input,textarea,[role='textbox'],[role='searchbox'],[role='combobox'],[contenteditable='true']").slice(0,12).map(el=>{
+        const rect=el.getBoundingClientRect();
+        return `${el.tagName.toLowerCase()}[type=${el.getAttribute("type")||"无"};role=${el.getAttribute("role")||"无"};placeholder=${searchHint(el).trim().slice(0,100)||"无"};visible=${visible(el)};disabled=${!!el.disabled};readonly=${!!el.readOnly};rect=${Math.round(rect.width)}x${Math.round(rect.height)}]`;
+      }).join(" | ")||"弹窗内没有输入控件候选";
+      return skuFailure("04/8.2 定位 SKU 搜索框","SKU 弹窗已找到，但没有可输入的搜索控件；尚未执行搜索、勾选、物流或 PDF 上传。",modal,{弹窗候选数:deepQueryAll(document,'[role="dialog"],[class*="dialog"],[class*="modal"],[class*="next-overlay"]:not([class*="mask"])').filter(visible).length,SKU输入候选数:searchCandidates.length,弹窗控件详情:candidateDetails,预期SKU:items.map(item=>item.code).join(",")});
+    }
     const pageSizeLabel=deepQueryAll(modal,"label,span,div,p").filter(el=>visible(el)&&norm(textOf(el)).includes("每页显示")).sort((a,b)=>textOf(a).length-textOf(b).length)[0];
     if(!pageSizeLabel) return skuFailure("04/8.3 定位分页控件","没有找到“每页显示”标签，未继续 SKU 匹配。",modal,{SKU搜索框:search.tagName.toLowerCase(),搜索框placeholder:search.placeholder||search.getAttribute("data-placeholder")||"空",预期SKU:items.map(item=>item.code).join(",")});
     let sizeTrigger=null;
@@ -271,11 +321,7 @@
     const searchCodes=[...new Set(items.map(item=>warehouseSkuSearchCode(item.code)).filter(Boolean))];
     if(items.some(item=>!warehouseSkuSearchCode(item.code))) return skuFailure("04/8.4 生成仓库 SKU 查询码","至少一个商品 SKU 归一后为空，未提交搜索。",modal,{原始SKU:items.map(item=>item.code).join("、"),生成查询码:searchCodes.join("、")||"无"});
     const query=searchCodes.join("\n");
-    if(search.isContentEditable||search.getAttribute("role")==="textbox") {
-      search.textContent=query;
-      search.dispatchEvent(new InputEvent("input",{bubbles:true,inputType:"insertText",data:query}));
-      search.dispatchEvent(new Event("change",{bubbles:true}));
-    } else setValue(search,query);
+    if(!setSkuSearchValue(search,query)) return skuFailure("04/8.4 写入 SKU 搜索框","已定位搜索候选，但该控件没有可写入的输入元素；尚未执行搜索或勾选。",modal,{控件标签:search.tagName?.toLowerCase()||"未知",控件角色:search.getAttribute("role")||"无",placeholder:searchHint(search).trim()||"无",目标查询码:searchCodes.join("、")});
     if(!clickSearchButtonNear(search,modal)) return skuFailure("04/8.4 执行 SKU 搜索","已写入仓库格式查询码，但搜索框附近没有找到搜索按钮。",modal,{输入框描述:`${search.tagName.toLowerCase()} placeholder=${search.placeholder||search.getAttribute("data-placeholder")||"空"}`,原始SKU:items.map(item=>item.code).join("、"),仓库格式查询码:searchCodes.join("、"),查询框实际值:query,搜索图标候选:deepQueryAll(modal,'[class*="search"],button,[role="button"],svg,i').filter(visible).length});
     await wait(1000);
     const selected=[];
@@ -288,7 +334,7 @@
       // DOM 有时会同时命中同一行的 next-table-row 和内部 role=row 包装；只保留最内层行。
       const distinctMatches=matches.filter(row=>!matches.some(other=>other!==row&&row.contains?.(other)));
       if(distinctMatches.length>1) return skuFailure("04/8.5 校验 SKU 匹配唯一性",`SKU ${item.code} 在当前弹窗中匹配到 ${distinctMatches.length} 个独立行；为避免选错，已停止。`,modal,{目标SKU:item.code,匹配行摘要:distinctMatches.slice(0,8).map(textOf).join(" | ")});
-      const row=distinctMatches.sort((a,b)=>a.querySelectorAll("*").length-b.querySelectorAll("*").length)[0];
+      const row=smallestDomFirst(distinctMatches)[0];
       if(!row) return skuFailure("04/8.5 从弹窗表格匹配 SKU",`没有匹配到 ${item.code}（按忽略 AE- 前缀及标点匹配）；已匹配=${selected.join("、")||"无"}`,modal,{目标SKU:item.code,当前页行数:deepQueryAll(modal,SKU_ROW_SELECTOR).filter(visible).length,表格SKU样例:deepQueryAll(modal,SKU_ROW_SELECTOR).filter(visible).slice(0,20).map(row=>textOf(deepQueryAll(row,'td[data-next-table-col="1"],[role="cell"]').find(cell=>visible(cell))||row).replace(/\s+/g," ").trim()).join(" | ")||"无"});
       if(!clickCheckboxInRow(row)) return skuFailure("04/8.6 勾选匹配 SKU",`匹配到 ${item.code}，但该行没有可见复选框。`,modal,{匹配行文本:textOf(row).slice(0,180)});
       await wait(120);
@@ -305,7 +351,7 @@
       const matchingRows=deepQueryAll(document,SKU_ROW_SELECTOR).filter(row=>visible(row)&&rowMatchesSku(row,item.code));
       const rowsWithQuantityControl=matchingRows.filter(candidate=>deepQueryAll(candidate,"input").some(input=>/^(?:qty|quantity)[_-]/i.test(input.id)));
       const rows=rowsWithQuantityControl.length?rowsWithQuantityControl:matchingRows;
-      const row=rows.sort((a,b)=>a.querySelectorAll("*").length-b.querySelectorAll("*").length)[0];
+      const row=smallestDomFirst(rows)[0];
       if(!row) return skuFailure("04/8.8 确认后回查 SKU 主表",`弹窗确认后主表没有找到已添加的 SKU ${item.code}，未继续物流设置。`,document.body,{已确认SKU:selected.join(","),主表SKU行数:deepQueryAll(document,SKU_ROW_SELECTOR).filter(visible).length});
       const quantityInputs=deepQueryAll(row,"input").filter(el=>control(el)&&!el.disabled&&!el.readOnly);
       const byId=quantityInputs.filter(el=>/^(?:qty|quantity)[_-]/i.test(el.id));
@@ -326,7 +372,7 @@
   }
   function clickRadioLabel(label) {
     const target=norm(label);
-    const textNode=deepQueryAll(document,"label,span,div,p").filter(el=>visible(el)&&norm(textOf(el))===target).sort((a,b)=>a.querySelectorAll("*").length-b.querySelectorAll("*").length)[0];
+    const textNode=smallestDomFirst(deepQueryAll(document,"label,span,div,p").filter(el=>visible(el)&&norm(textOf(el))===target))[0];
     if(!textNode) return false;
     for(let parent=textNode,depth=0;parent&&depth<5;parent=parent.parentElement,depth++) {
       const radios=deepQueryAll(parent,'input[type="radio"],[role="radio"],[class*="next-radio"]').filter(visible);
@@ -338,7 +384,7 @@
   function serviceKey(value) { return norm(value).replace(/[-—_]/g,""); }
   function findServiceOption(serviceName) {
     const key=serviceKey(serviceName);
-    return deepQueryAll(document,'tr,[role="row"],[class*="next-table-row"],label,li,span,div').filter(el=>visible(el)&&serviceKey(textOf(el))===key).sort((a,b)=>a.querySelectorAll("*").length-b.querySelectorAll("*").length)[0]||null;
+    return smallestDomFirst(deepQueryAll(document,'tr,[role="row"],[class*="next-table-row"],label,li,span,div').filter(el=>visible(el)&&serviceKey(textOf(el))===key))[0]||null;
   }
   function findServiceRadio(option) {
     for(let parent=option,depth=0;parent&&depth<7;parent=composedParent(parent),depth++) {
@@ -544,7 +590,7 @@
   }
   function findBuyerCopyButton(table) {
     const buyerCell=deepQueryAll(table,'tbody tr:not(.next-table-group-header) td[data-next-table-col="4"]')[0]||table;
-    return deepQueryAll(buyerCell,"button,[role=button],a,span,div").filter(el=>visible(el)&&norm(textOf(el))==="复制买家信息").sort((a,b)=>a.querySelectorAll("*").length-b.querySelectorAll("*").length)[0]||null;
+    return smallestDomFirst(deepQueryAll(buyerCell,"button,[role=button],a,span,div").filter(el=>visible(el)&&norm(textOf(el))==="复制买家信息"))[0]||null;
   }
   function focusBuyerCopyButton(table) {
     const button=findBuyerCopyButton(table);

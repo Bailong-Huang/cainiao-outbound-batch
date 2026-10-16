@@ -22,6 +22,9 @@
     ui.notice.className = `notice ${kind}`;
     ui.notice.hidden = !text;
   }
+  function escapeHtml(value) {
+    return String(value??"").replace(/[&<>"']/g,char=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"})[char]);
+  }
   function localDate(timestamp) {
     const d = new Date(timestamp);
     return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,"0")}-${String(d.getDate()).padStart(2,"0")}`;
@@ -165,15 +168,25 @@
   async function persistStatuses() { await chrome.storage.local.set({orderStatuses:statuses}); }
 
   async function scanDirectory(handle) {
-    const found = [];
-    for await (const entry of handle.values()) {
-      if (entry.kind !== "file" || !/\.pdf$/i.test(entry.name)) continue;
-      const file = await entry.getFile();
-      const orderId = entry.name.replace(/\.pdf$/i, "");
-      found.push({name:entry.name, orderId, lastModified:file.lastModified, size:file.size});
-    }
+    const pdfEntries=[];
+    for await (const entry of handle.values()) if(entry.kind==="file"&&/\.pdf$/i.test(entry.name)) pdfEntries.push(entry);
+    // File metadata reads are independent; parallelize them instead of waiting
+    // for every local PDF one by one. No PDF contents are loaded during scan.
+    const found=await Promise.all(pdfEntries.map(async entry=>{
+      const file=await entry.getFile();
+      return {name:entry.name,orderId:entry.name.replace(/\.pdf$/i,""),lastModified:file.lastModified,size:file.size};
+    }));
     found.sort((a,b)=>b.lastModified-a.lastModified || a.name.localeCompare(b.name));
     files = found;
+    let migratedFailureStatus=false;
+    for(const file of files) {
+      const status=statuses[file.orderId]||"";
+      if(status.startsWith("失败")) {
+        statuses[file.orderId]=`历史失败：${status}`;
+        migratedFailureStatus=true;
+      }
+    }
+    if(migratedFailureStatus) await persistStatuses();
     ui.folderName.textContent = handle.name || "已授权面单目录";
     ui.scanInfo.textContent = `最近扫描 ${new Intl.DateTimeFormat("zh-CN",{hour:"2-digit",minute:"2-digit",second:"2-digit"}).format(new Date())} · ${files.length} 个 PDF`;
     ui.refresh.disabled = false;
@@ -219,8 +232,14 @@
   }
   function renderRow(file) {
     const checked=selected.has(file.name), status=statuses[file.orderId]||"未整理", ready=isReady(file.orderId);
-    const stateClass=status==="已创建"?"created":ready?"ready":status.startsWith("失败")?"error":"";
-    return `<article class="order-row"><div class="order-head"><input type="checkbox" data-action="select" data-name="${file.name}" ${checked?"checked":""}><div class="order-main" data-action="expand" data-order="${file.orderId}"><div class="order-id">${file.orderId}</div><div class="order-meta">${prettyTime(file.lastModified)} · ${Math.max(1,Math.round(file.size/1024))} KB</div></div><span class="state ${stateClass}">${ready?"资料完整":status}</span></div><div class="order-extra" id="extra-${file.orderId}" hidden><div class="mini-actions"><button class="mini-button" data-action="edit" data-order="${file.orderId}">填写/检查资料</button><button class="mini-button" data-action="capture" data-order="${file.orderId}">尝试读取 CSP</button><button class="mini-button" data-action="fill-one" data-order="${file.orderId}">预填菜鸟页面</button></div><p class="tiny-note">默认仓库：波兰仓　平台：速卖通　附件：${file.name}</p></div></article>`;
+    const historicalFailure=status.startsWith("历史失败：");
+    const failed=historicalFailure||status.startsWith("失败");
+    const stateClass=status==="已创建"?"created":failed?"error":ready?"ready":"";
+    const stateLabel=historicalFailure?"上次失败":failed?"预填失败":ready?"资料完整":status;
+    const errorText=status.replace(/^历史失败：/,"").replace(/^失败[：:]?\s*/,"");
+    const errorDetails=failed?`<div class="order-error" role="status">${historicalFailure?"历史失败记录（目录刷新时保留，仅供参考，不代表本次运行）：":"本次预填失败："}${escapeHtml(errorText)}</div>`:"";
+    const orderId=escapeHtml(file.orderId),fileName=escapeHtml(file.name);
+    return `<article class="order-row"><div class="order-head"><input type="checkbox" data-action="select" data-name="${fileName}" ${checked?"checked":""}><div class="order-main" data-action="expand" data-order="${orderId}"><div class="order-id">${orderId}</div><div class="order-meta">${prettyTime(file.lastModified)} · ${Math.max(1,Math.round(file.size/1024))} KB</div></div><span class="state ${stateClass}" title="${escapeHtml(status)}">${escapeHtml(stateLabel)}</span></div><div class="order-extra" id="extra-${orderId}" hidden>${errorDetails}<div class="mini-actions"><button class="mini-button" data-action="edit" data-order="${orderId}">填写/检查资料</button><button class="mini-button" data-action="capture" data-order="${orderId}">尝试读取 CSP</button><button class="mini-button" data-action="fill-one" data-order="${orderId}">预填菜鸟页面</button></div><p class="tiny-note">默认仓库：波兰仓　平台：速卖通　附件：${fileName}</p></div></article>`;
   }
 
   function openDetails(orderId) {
@@ -348,8 +367,11 @@
         failures.push(`${file.orderId}（${error.message||"读取失败"}）`);
         if(String(error.message||"").includes("自动注入也失败")) break;
       }
-      render();
+      // Rebuilding every order card after every capture scales poorly for a
+      // large selection. Keep progress responsive, but redraw in small batches.
+      if((index+1)%5===0) render();
     }
+    render();
     const failureText=failures.length?`失败：${failures.join("；")}`:"";
     const addressNote=addresses===matched?"买家地址均已自动导入。":`买家地址自动导入 ${addresses}/${matched} 单${addressFailures.length?`；未导入：${addressFailures.slice(0,4).join("；")}${addressFailures.length>4?"；…":""}`:""}。未导入订单可单独打开资料，真实点击 CSP 的复制按钮后再读取剪贴板。`;
     return `已按所选订单逐单在 CSP 定位并读取 ${matched}/${picked.length} 单；${addressNote}${failureText}`;
@@ -387,11 +409,11 @@
       throw new Error(`预检失败：无法枚举菜鸟标签页的 frame；停止阶段=调用页面脚本之前；tabId=${tab.id}；URL=${tab.url||"未知"}；原因=${error.message||String(error)}。请确认扩展具有菜鸟页面访问权限，或刷新菜鸟标签页后重试。`);
     }
     const cainiaoFrames=frameDiagnostics.filter(frame=>String(frame.result?.url||"").startsWith("https://b.gfn.cainiao.com/"));
-    const currentBuildFrames=cainiaoFrames.filter(frame=>frame.result?.build==="1.0.0");
+    const currentBuildFrames=cainiaoFrames.filter(frame=>frame.result?.build==="1.0.5");
     const score=frame=>Number(frame.result?.hasWarehouse)+Number(frame.result?.hasCustomerOrder)+Number(frame.result?.hasPlatformOrder)+Number(frame.result?.hasSkuEntry)+Number(frame.result?.hasSkuDialog);
     const formFrame=currentBuildFrames.filter(frame=>score(frame)>0).sort((a,b)=>score(b)-score(a))[0]|| (currentBuildFrames.length===1?currentBuildFrames[0]:null);
     const frameSummary=cainiaoFrames.map(frame=>{const d=frame.result||{};return `frameId=${frame.frameId},build=${d.build||"未知"},top=${!!d.isTop},warehouse=${!!d.hasWarehouse},customerOrder=${!!d.hasCustomerOrder},platformOrder=${!!d.hasPlatformOrder},skuEntry=${!!d.hasSkuEntry},skuDialog=${!!d.hasSkuDialog},inputs=${d.visibleInputs??"?"},modals=${d.modalCount??"?"},rows=${d.visibleRows??"?"},url=${d.url||"未知"}`;}).join(" || ")||"未检测到 b.gfn.cainiao.com frame";
-    if(!currentBuildFrames.length) throw new Error(`检测到菜鸟标签页没有运行当前版本内容脚本；停止阶段=调用页面脚本之前；期望版本=1.0.0；frame检测=${frameSummary}。请在 chrome://extensions 重新加载扩展，再刷新菜鸟页面；刷新会清空当前表单，请先保存或记录已填写资料。`);
+    if(!currentBuildFrames.length) throw new Error(`检测到菜鸟标签页没有运行当前版本内容脚本；停止阶段=调用页面脚本之前；期望版本=1.0.5；frame检测=${frameSummary}。请在 chrome://extensions 重新加载扩展，再刷新菜鸟页面；刷新会清空当前表单，请先保存或记录已填写资料。`);
     if(!formFrame) throw new Error(`已找到当前版本脚本，但多个 frame 中没有识别到菜鸟出库表单；停止阶段=选择表单 frame；${frameSummary}。请保持新建出库委托单页面打开，并把最新 frame 检测结果发回。`);
     if(score(formFrame)===0) throw new Error(`当前唯一版本脚本 frame 没有检测到出库表单关键元素；停止阶段=选择表单 frame；目标frameId=${formFrame.frameId}；${frameSummary}。页面可能还未加载完成，或表单在未获访问权限的跨域 frame 中。`);
     const response=await sendToTab(tab,{type:"CAINIAO_PREPARE_OUTBOUND",payload:{orderId,warehouse:"波兰仓",platform:"速卖通",address:parsed,skuItems,carrier:data.carrier,tracking:data.tracking,pdf}},formFrame.frameId);
@@ -429,7 +451,7 @@
     if(action==="edit") { openDetails(target.dataset.order); return; }
     if(action==="toggle-day") { const rows=files.filter(f=>localDate(f.lastModified)===target.dataset.day); const all=rows.every(f=>selected.has(f.name)); rows.forEach(f=>all?selected.delete(f.name):selected.add(f.name)); await persistSelection(); render(); return; }
     if(action==="capture") { const order=target.dataset.order; try { notify(await captureFromCsp(order),"ok"); openDetails(order); } catch(e){notify(e.message,"error");} return; }
-    if(action==="fill-one") { const order=target.dataset.order; try { notify(await fillCainiao(order),"ok"); } catch(e){notify(e.message,"error");} }
+    if(action==="fill-one") { const order=target.dataset.order; try { notify(await fillCainiao(order),"ok"); } catch(e){statuses[order]=`失败：${e.message}`; await persistStatuses(); render(); notify(e.message,"error");} }
   });
   ui.groups.addEventListener("change",async(event)=>{if(event.target.matches('[data-action="select"]')){const name=event.target.dataset.name; event.target.checked?selected.add(name):selected.delete(name); await persistSelection(); updateCounts();}});
   ui.fill.addEventListener("click",fillNext);

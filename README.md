@@ -1,8 +1,14 @@
 # 菜鸟批量出库助手 | Cainiao Batch Outbound Assistant
 
+<<<<<<< HEAD
 
 **版本 / Version: 1.0.5** · [下载 v1.0.5 插件 ZIP / Download extension ZIP](https://github.com/Bailong-Huang/cainiao-outbound-batch/releases/download/v1.0.5/cainiao-outbound-batch-v1.0.5.zip)
 
+=======
+**Version / 版本：1.0.5**
+
+1.0.5 labels persisted prefill failures as historical after a directory scan, so old diagnostics are not mistaken for a new failure. 1.0.4 recognizes Polish Paczkomat parcel-locker addresses. / 1.0.5 将目录扫描前已保存的预填失败标记为历史记录，避免误认为本次运行失败；1.0.4 增加波兰 Paczkomat 快递柜地址识别。
+>>>>>>> 8da8113 (Optimize extension and add icon)
 
 [简体中文](#简体中文) | [English](#english)
 
